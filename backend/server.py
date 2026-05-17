@@ -22,8 +22,9 @@ import logging
 import os
 import re
 import sys
+import time
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 # Make pip-installed NVIDIA libs discoverable by ctranslate2 on Windows.
@@ -98,7 +99,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from config import (
     MODEL_SIZE, DEVICE, COMPUTE_TYPE, TRANSLATOR,
-    HOST, PORT, SAMPLE_RATE, VAD_FILTER,
+    HOST, PORT, SAMPLE_RATE, VAD_FILTER, MAX_CHUNK_LAG_S,
 )
 
 log = logging.getLogger("kami-subs")
@@ -187,17 +188,6 @@ class Session:
     target_lang: str = "ar"
     task: str = "transcribe"
     chunk_id: int = 0
-    history: list[str] = field(default_factory=list)  # rolling last N final lines
-
-    def add_final(self, line: str):
-        self.history.append(line)
-        if len(self.history) > 8:
-            self.history = self.history[-8:]
-
-    @property
-    def initial_prompt(self) -> str:
-        # Soft prompt to help whisper keep context coherent across chunks.
-        return " ".join(self.history)[-400:] if self.history else ""
 
 
 def transcribe_chunk(session: Session, pcm_int16: np.ndarray) -> tuple[str, str]:
@@ -213,12 +203,15 @@ def transcribe_chunk(session: Session, pcm_int16: np.ndarray) -> tuple[str, str]
         task=session.task if session.task in ("transcribe", "translate") else "transcribe",
         vad_filter=VAD_FILTER,
         beam_size=1,                   # fast; bump to 5 for quality
+        # initial_prompt is intentionally OMITTED. It primes whisper with the
+        # rolling transcript history, which is the #1 cause of fansub-credit
+        # hallucinations in live captioning — past credit-shaped fragments
+        # in the prompt produce more credit-shaped output. Cross-chunk name
+        # consistency loss is worth the trade.
         condition_on_previous_text=False,
-        initial_prompt=session.initial_prompt or None,
         no_speech_threshold=0.6,
-        # Hallucination guardrails — when whisper is uncertain it tends to
-        # output fansub credits (training-data artifact). Tight thresholds
-        # force a bail-out instead of fabrication:
+        # When whisper is uncertain it tends to fabricate fansub credits.
+        # Tight thresholds force a bail-out:
         #   - compression_ratio > 2.4 → output is repetitive/garbage → drop
         #   - avg_logprob < -1.0     → low confidence → drop
         compression_ratio_threshold=2.4,
@@ -229,11 +222,28 @@ def transcribe_chunk(session: Session, pcm_int16: np.ndarray) -> tuple[str, str]
     return text, (info.language if info and info.language else (lang or "auto"))
 
 
-async def _handle_chunk(ws: WebSocket, session: Session, loop, raw_bytes: bytes) -> None:
+async def _handle_chunk(
+    ws: WebSocket, session: Session, loop, raw_bytes: bytes, arrived_at: float
+) -> None:
     """One audio chunk: silence-gate -> transcribe -> translate -> send."""
-    pcm = np.frombuffer(raw_bytes, dtype=np.int16)
     session.chunk_id += 1
     cid = session.chunk_id
+
+    # Backlog drop. If processing has slipped behind real-time, this chunk
+    # is already stale by the time we get to it. Subs from 15s ago are
+    # worse UX than no subs at all — drop and let the next (fresher) chunk
+    # catch us up. Send empty so the overlay clears.
+    lag = time.monotonic() - arrived_at
+    if lag > MAX_CHUNK_LAG_S:
+        log.info("chunk #%d: dropped (lag=%.2fs > %.1fs)", cid, lag, MAX_CHUNK_LAG_S)
+        await ws.send_text(json.dumps({
+            "type": "transcript",
+            "text": "", "raw": "",
+            "chunkId": cid, "isFinal": True, "dropped": "lag",
+        }))
+        return
+
+    pcm = np.frombuffer(raw_bytes, dtype=np.int16)
 
     if pcm.size:
         rms = float(np.sqrt(np.mean((pcm.astype(np.float32) / 32768.0) ** 2)))
@@ -282,7 +292,6 @@ async def _handle_chunk(ws: WebSocket, session: Session, loop, raw_bytes: bytes)
         )
 
     log.info("chunk #%d [%s->%s] raw=%r out=%r", cid, src, session.target_lang, raw, out)
-    session.add_final(raw)
     await ws.send_text(json.dumps({
         "type": "transcript",
         "text": out, "raw": raw,
@@ -322,11 +331,15 @@ async def handle_socket(ws: WebSocket):
                 break
 
             if "bytes" in msg and msg["bytes"]:
+                # Stamp arrival time NOW so the chunk handler can detect
+                # backlog. If we stamped inside _handle_chunk, the time would
+                # already include the previous chunk's processing wait.
+                arrived_at = time.monotonic()
                 # Process each chunk in its own try block — a single bad
                 # chunk (translator throw, whisper edge case, etc) used to
                 # kill the entire WS session. Now we just log and continue.
                 try:
-                    await _handle_chunk(ws, session, loop, msg["bytes"])
+                    await _handle_chunk(ws, session, loop, msg["bytes"], arrived_at)
                 except Exception as e:
                     log.exception("chunk handler error: %s", e)
                     try:

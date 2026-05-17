@@ -24,7 +24,14 @@ PORT = int(os.getenv("KAMI_PORT", "8765"))
 # Input audio from the extension is always 16kHz mono PCM Int16.
 SAMPLE_RATE = 16000
 
-# VAD trims silence before transcription. Aggressive trimming on short
-# (3s) chunks can leave Whisper with nothing to work with. Disable by
-# default; let Whisper itself decide if a chunk is empty.
-VAD_FILTER = os.getenv("KAMI_VAD", "false").lower() in ("1", "true", "yes")
+# VAD trims silence/music before transcription. Enabled by default because
+# whisper hallucinates fansub credits on non-speech audio — Silero VAD
+# kills that at the source by simply not feeding non-speech to the model.
+# Set KAMI_VAD=false to disable if you need to caption noisy/quiet content.
+VAD_FILTER = os.getenv("KAMI_VAD", "true").lower() in ("1", "true", "yes")
+
+# Max age of a chunk (seconds) before we drop it instead of transcribing.
+# Prevents unbounded backlog: if processing slips behind real-time, we
+# discard stale chunks so the user always sees what's *currently* playing
+# instead of subs from 30 seconds ago.
+MAX_CHUNK_LAG_S = float(os.getenv("KAMI_MAX_LAG_S", "3.0"))
