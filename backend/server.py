@@ -20,6 +20,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -116,6 +117,52 @@ def get_model():
     return _model
 
 
+# ----- hallucination filter -------------------------------------------------
+#
+# Whisper was trained on millions of fansub files that ended with translator
+# credits. On uncertain audio (intro music, accents, silence the gate missed)
+# it "completes" by generating those credits — most commonly:
+#   "ترجمة موقع xxxx.com" / "ترجمة وتعديل ..." / "Subtitles by ..."
+#   "Amara.org community" / "addic7ed.com" / "opensubtitles..."
+#   "Thanks for watching" / "Please subscribe" / "شكرا للمشاهدة"
+#
+# Strategy: only drop the chunk if the ENTIRE transcript looks like a credit
+# line. Don't filter on substring match — real video content might genuinely
+# reference a website (e.g. a news clip saying "from cnn.com").
+
+_HALLUCINATION_PATTERNS = [
+    # Arabic subtitle credits — the dominant hallucination in the user's case.
+    # ترجمة (sing), ترجمات (plural), ترجم (verb), ترجمها (he translated it) —
+    # all valid lead-ins to a credit. \S* covers the suffix variants.
+    re.compile(r"^\s*ترجم\S*\s+(?:موقع|من|بواسطة|وتعديل|تعديل|وعدل|عدل|"
+               r"ورفع|وتوقيت|وتدقيق|وإنتاج|فيلم|الفيلم|الحلقة|للعربية)",
+               re.IGNORECASE),
+    re.compile(r"^\s*ترجم\S*\s+\S+\s*$", re.IGNORECASE),
+    re.compile(r"^\s*شكر[ا]?\s+(?:للمشاهدة|على المشاهدة)\s*[!.\s]*$", re.IGNORECASE),
+    # English subtitle credits
+    re.compile(r"^\s*(?:subtitles?|captions?)\s+(?:by|provided\s+by|from)\b", re.IGNORECASE),
+    re.compile(r"^\s*subtitled\s+by\b", re.IGNORECASE),
+    re.compile(r"^\s*(?:transcript|translation)\s+by\b", re.IGNORECASE),
+    re.compile(r"^\s*(?:thank\s+you|thanks)\s+for\s+watching[!.\s]*$", re.IGNORECASE),
+    re.compile(r"^\s*(?:please\s+)?(?:like\s+and\s+)?subscribe\b", re.IGNORECASE),
+    # Whole text is just a known subtitle-site domain
+    re.compile(r"^\s*(?:www\.|https?://)?(?:amara\.org|addic7ed\.com|opensubtitles|subscene|"
+               r"podnapisi|subdl|subtitleseeker|yifysubtitles)\b\S*\s*$", re.IGNORECASE),
+    # Whole text is a single bare domain (e.g. "xxx.com")
+    re.compile(r"^\s*(?:www\.|https?://)?[a-z0-9-]{2,}\.(?:com|net|org|tv|io|co|me)\b\S*\s*$",
+               re.IGNORECASE),
+    # Music tags whisper sometimes emits in transcribe mode
+    re.compile(r"^\s*[\[\(]?\s*(?:music|applause|silence|♪+)\s*[\]\)]?\s*$", re.IGNORECASE),
+]
+
+
+def looks_like_hallucination(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return False
+    return any(p.search(t) for p in _HALLUCINATION_PATTERNS)
+
+
 # ----- translation ----------------------------------------------------------
 def translate(text: str, src: str, tgt: str) -> str:
     if not text.strip() or src == tgt:
@@ -169,6 +216,13 @@ def transcribe_chunk(session: Session, pcm_int16: np.ndarray) -> tuple[str, str]
         condition_on_previous_text=False,
         initial_prompt=session.initial_prompt or None,
         no_speech_threshold=0.6,
+        # Hallucination guardrails — when whisper is uncertain it tends to
+        # output fansub credits (training-data artifact). Tight thresholds
+        # force a bail-out instead of fabrication:
+        #   - compression_ratio > 2.4 → output is repetitive/garbage → drop
+        #   - avg_logprob < -1.0     → low confidence → drop
+        compression_ratio_threshold=2.4,
+        log_prob_threshold=-1.0,
     )
     parts = [seg.text for seg in segments]
     text = "".join(parts).strip()
@@ -205,6 +259,18 @@ async def _handle_chunk(ws: WebSocket, session: Session, loop, raw_bytes: bytes)
     if not raw:
         log.info("chunk #%d: empty transcript (lang=%s) rms=%.4f peak=%.3f",
                  cid, detected, rms, peak)
+        return
+
+    # Drop whole-chunk fansub-credit hallucinations BEFORE translating or
+    # adding to history. If we add them to history they prime more
+    # hallucinations on subsequent chunks via initial_prompt context.
+    if looks_like_hallucination(raw):
+        log.info("chunk #%d: hallucination filter dropped raw=%r", cid, raw)
+        await ws.send_text(json.dumps({
+            "type": "transcript",
+            "text": "", "raw": raw,
+            "chunkId": cid, "isFinal": True, "filtered": "hallucination",
+        }, ensure_ascii=False))
         return
 
     src = detected if session.source_lang == "auto" else session.source_lang
