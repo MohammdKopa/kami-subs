@@ -1,0 +1,26 @@
+#kami-subs-overlay {
+  position: fixed;
+  z-index: 2147483647;
+  pointer-events: none;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 10px 18px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-family: 'Segoe UI', 'Tahoma', 'Arial', sans-serif;
+  font-size: var(--kami-font-size, 28px);
+  line-height: 1.35;
+  text-align: center;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+  opacity: 0;
+  transition: opacity 220ms ease-out;
+  max-width: 92vw;
+  box-sizing: border-box;
+}
+#kami-subs-overlay.kami-visible { opacity: 1; }
+#kami-subs-overlay.kami-error { background: rgba(120, 20, 20, 0.85); }
+#kami-subs-overlay .kami-subs-text { display: inline-block; }

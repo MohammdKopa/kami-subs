@@ -1,0 +1,16 @@
+fastapi>=0.110
+uvicorn[standard]>=0.27
+websockets>=12
+numpy>=1.26
+faster-whisper>=1.0.3
+deep-translator>=1.11.4
+
+# GPU runtime libraries — required for KAMI_DEVICE=cuda on Windows.
+# faster-whisper imports ctranslate2 which dlopens these. The server's DLL
+# preloader finds them inside .venv/Lib/site-packages/nvidia/*/bin.
+# CPU-only users can `pip install -r requirements.txt --no-deps nvidia-...` to skip,
+# or just remove these three lines.
+nvidia-cublas-cu12
+nvidia-cudnn-cu12
+nvidia-cuda-runtime-cu12
+nvidia-cuda-nvrtc-cu12

@@ -1,0 +1,93 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Kami Subs</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Kami Subs <span class="spark">✨</span></h1>
+      <p class="tagline">Live AI subtitles on any video</p>
+    </header>
+
+    <main>
+      <button id="toggle" class="primary">Start</button>
+      <div id="status" class="status idle">Idle</div>
+      <div id="backendStatus" class="backend-status idle">Backend: unknown</div>
+
+      <section class="settings">
+        <label>
+          Source language
+          <select id="sourceLang">
+            <option value="auto" selected>Auto detect</option>
+            <option value="en">English</option>
+            <option value="es">Spanish</option>
+            <option value="fr">French</option>
+            <option value="de">German</option>
+            <option value="ja">Japanese</option>
+            <option value="ko">Korean</option>
+            <option value="zh">Chinese</option>
+            <option value="tr">Turkish</option>
+            <option value="hi">Hindi</option>
+          </select>
+        </label>
+
+        <label>
+          Target language
+          <select id="targetLang">
+            <option value="ar" selected>Arabic</option>
+            <option value="en">English</option>
+            <option value="es">Spanish</option>
+            <option value="fr">French</option>
+            <option value="de">German</option>
+            <option value="tr">Turkish</option>
+          </select>
+        </label>
+
+        <label>
+          Font size <span id="fontSizeVal">28</span>px
+          <input type="range" id="fontSize" min="14" max="56" step="2" value="28" />
+        </label>
+
+        <label>
+          Position
+          <select id="position">
+            <option value="bottom" selected>Bottom</option>
+            <option value="top">Top</option>
+          </select>
+        </label>
+
+        <label>
+          Whisper model
+          <select id="model">
+            <option value="tiny">tiny (fastest)</option>
+            <option value="base">base</option>
+            <option value="small" selected>small (recommended)</option>
+            <option value="medium">medium</option>
+            <option value="large-v3">large-v3 (best, GPU only)</option>
+          </select>
+        </label>
+
+        <label>
+          Device
+          <select id="device">
+            <option value="cpu">CPU</option>
+            <option value="cuda" selected>GPU (CUDA)</option>
+          </select>
+        </label>
+
+        <label>
+          Backend URL
+          <input type="text" id="backendUrl" value="ws://127.0.0.1:8765/ws" />
+        </label>
+      </section>
+    </main>
+
+    <footer>
+      <span class="hint">Backend auto-starts via Native Messaging. See README if "host unavailable".</span>
+    </footer>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

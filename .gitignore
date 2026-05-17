@@ -1,0 +1,21 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+node_modules/
+.DS_Store
+Thumbs.db
+extension/icons/*.png
+!extension/icons/.gitkeep
+backend/models/
+
+# Native Messaging host: secrets + machine-specific generated files
+extension/native/.private_key.pem
+extension/native/com.kamisubs.host.json
+
+# Packed extension artifacts (Chrome's Pack Extension output).
+# extension.pem in particular is the CRX signing private key — never commit.
+extension.crx
+extension.pem
+*.crx
+*.pem

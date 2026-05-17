@@ -1,0 +1,114 @@
+:root {
+  --bg: #0f1117;
+  --fg: #e7e9ee;
+  --muted: #8b91a1;
+  --accent: #ffb84d;
+  --accent-press: #e6a235;
+  --ok: #5fd17a;
+  --err: #ff6b6b;
+  --panel: #181b24;
+  --border: #232735;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: 'Segoe UI', 'Inter', system-ui, sans-serif;
+  font-size: 13px;
+  width: 320px;
+}
+
+header {
+  padding: 14px 16px 8px;
+}
+header h1 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+header .spark { color: var(--accent); }
+.tagline {
+  margin: 2px 0 0;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+main {
+  padding: 8px 16px 12px;
+}
+
+button.primary {
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #181b24;
+  background: var(--accent);
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 120ms ease;
+}
+button.primary:hover { background: var(--accent-press); }
+button.primary.stop { background: var(--err); color: #fff; }
+
+.status {
+  margin: 8px 0 12px;
+  padding: 6px 10px;
+  font-size: 12px;
+  border-radius: 6px;
+  text-align: center;
+  background: var(--panel);
+  border: 1px solid var(--border);
+}
+.status.live { color: var(--ok); border-color: rgba(95, 209, 122, 0.4); }
+.status.error { color: var(--err); border-color: rgba(255, 107, 107, 0.4); }
+
+.backend-status {
+  margin: -4px 0 12px;
+  padding: 4px 10px;
+  font-size: 10px;
+  border-radius: 6px;
+  text-align: center;
+  background: transparent;
+  color: var(--muted);
+}
+.backend-status.up      { color: var(--ok); }
+.backend-status.starting{ color: var(--accent); }
+.backend-status.down    { color: var(--muted); }
+.backend-status.bad     { color: var(--err); }
+
+.settings {
+  display: grid;
+  gap: 10px;
+}
+.settings label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.settings select,
+.settings input[type="text"] {
+  padding: 6px 8px;
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.settings input[type="range"] { accent-color: var(--accent); }
+
+footer {
+  padding: 8px 16px 14px;
+}
+.hint {
+  font-size: 10px;
+  color: var(--muted);
+}

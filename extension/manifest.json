@@ -1,0 +1,50 @@
+{
+  "manifest_version": 3,
+  "name": "Kami Subs — Live AI Subtitles",
+  "version": "0.1.0",
+  "description": "Live AI-generated subtitles (Arabic + more) on any browser video. Captures tab audio, transcribes with Whisper, overlays translated subs.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsrLfreFyEpc4T70sm/5S+TCzSecSoqB4GsbiUrhTMlQ/Jk3Z1tXBkCPdwUzHoxSEGa29EmIEaDXUkEdYDFWt7Zpy7rH50evm3AiInquDaBWelUh+LZvBZ0gcdTNeQJ3NgOoI3Nrmpbi9+TQkRmCqrSeD26KJ5/Winp3JKJFdw9b8btBxePGXOIlj36bHiF7lYIM5iVUxIJERDFnILlthz5DB0rXwZVqSUmn3aHD51tKSVHdNLw6Medyd+hURqqjt7YgSzosaioIDSCxW757G8gsvHt//Y6h+PGjiwRBSVuO/xJEDzpMigzFppMasP5bXaoWyFTTOIaI/HRDFNOnXtQIDAQAB",
+  "permissions": [
+    "tabCapture",
+    "offscreen",
+    "storage",
+    "activeTab",
+    "scripting",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "Kami Subs",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["offscreen.html"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
