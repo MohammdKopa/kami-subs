@@ -61,19 +61,30 @@
         <label>
           Whisper model
           <select id="model">
-            <option value="tiny">tiny (fastest)</option>
+            <option value="tiny">tiny (fastest, CPU)</option>
             <option value="base">base</option>
-            <option value="small" selected>small (recommended)</option>
+            <option value="small">small</option>
             <option value="medium">medium</option>
-            <option value="large-v3">large-v3 (best, GPU only)</option>
+            <option value="large-v3-turbo" selected>large-v3-turbo (recommended, GPU)</option>
+            <option value="large-v3">large-v3 (best, slowest)</option>
           </select>
         </label>
 
         <label>
           Device
           <select id="device">
-            <option value="cpu">CPU</option>
-            <option value="cuda" selected>GPU (CUDA)</option>
+            <option value="auto" selected>Auto (GPU if available)</option>
+            <option value="cuda">GPU (CUDA)</option>
+            <option value="cpu">CPU (slow — turbo not real-time)</option>
+          </select>
+        </label>
+
+        <label>
+          Translator
+          <select id="translator">
+            <option value="nllb" selected>NLLB local (offline, better Arabic)</option>
+            <option value="google">Google (online, zero setup)</option>
+            <option value="none">None (no translation)</option>
           </select>
         </label>
 

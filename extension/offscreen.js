@@ -16,10 +16,12 @@ let reconnectTimer = null;
 const MAX_RECONNECT_DELAY_MS = 5000;
 
 // We buffer 16kHz mono Float32 samples until we hit CHUNK_SECONDS, then emit a chunk.
-// 1.5s feels live on GPU (large-v3 transcribes a 1.5s chunk in ~150ms).
+// 1.0s keeps latency tight on GPU (large-v3-turbo transcribes a 1s chunk in
+// well under real-time). The backend re-assembles chunks into whole sentences
+// before translating, so a small chunk no longer hurts translation quality.
 // Bump back to 2.5–3s if CPU-bound to avoid backlog.
 const TARGET_SAMPLE_RATE = 16000;
-const CHUNK_SECONDS = 1.5;
+const CHUNK_SECONDS = 1.0;
 const CHUNK_SAMPLES = TARGET_SAMPLE_RATE * CHUNK_SECONDS;
 let chunkBuffer = new Float32Array(0);
 

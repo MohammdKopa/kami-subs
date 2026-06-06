@@ -14,6 +14,7 @@ const els = {
   backendUrl: $('backendUrl'),
   model: $('model'),
   device: $('device'),
+  translator: $('translator'),
 };
 
 const DEFAULTS = {
@@ -23,13 +24,15 @@ const DEFAULTS = {
   position: 'bottom',
   backendUrl: 'ws://127.0.0.1:8765/ws',
   task: 'translate',
-  model: 'small',
-  device: 'cuda',
+  model: 'large-v3-turbo',
+  device: 'auto',
+  translator: 'nllb',
 };
 
-// compute_type pairs naturally with device — int8 for CPU (fastest there),
-// float16 for GPU (fastest there). Expose if we ever need finer control.
-function computeFor(device) { return device === 'cuda' ? 'float16' : 'int8'; }
+// compute_type pairs naturally with device — float16 on GPU, int8 on CPU.
+// For "auto" we hint float16; the backend downgrades to int8 itself if it ends
+// up falling back to CPU, so this is just the preferred GPU compute type.
+function computeFor(device) { return device === 'cpu' ? 'int8' : 'float16'; }
 
 async function loadSettings() {
   const stored = await chrome.storage.local.get('settings');
@@ -42,6 +45,7 @@ async function loadSettings() {
   els.backendUrl.value = s.backendUrl;
   els.model.value = s.model;
   els.device.value = s.device;
+  els.translator.value = s.translator;
   return s;
 }
 
@@ -57,6 +61,7 @@ async function saveSettings() {
     model: els.model.value,
     device,
     compute: computeFor(device),
+    translator: els.translator.value,
   };
   await chrome.storage.local.set({ settings: s });
   return s;
@@ -127,7 +132,7 @@ async function onToggle() {
 els.fontSize.addEventListener('input', () => {
   els.fontSizeVal.textContent = els.fontSize.value;
 });
-['sourceLang','targetLang','fontSize','position','backendUrl','model','device'].forEach(k => {
+['sourceLang','targetLang','fontSize','position','backendUrl','model','device','translator'].forEach(k => {
   els[k].addEventListener('change', saveSettings);
 });
 els.toggle.addEventListener('click', onToggle);

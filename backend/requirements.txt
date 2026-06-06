@@ -2,8 +2,16 @@ fastapi>=0.110
 uvicorn[standard]>=0.27
 websockets>=12
 numpy>=1.26
-faster-whisper>=1.0.3
+faster-whisper>=1.1.0          # >=1.1 for the "large-v3-turbo" model alias
 deep-translator>=1.11.4
+
+# Optional — only needed for KAMI_TRANSLATOR=nllb (local offline translation).
+# Left out of the default install to keep it light; uncomment + reinstall to use.
+# The NLLB model runs on CTranslate2 (already pulled in by faster-whisper); torch
+# is only used once to convert the HF weights to ct2 format on first run.
+# transformers>=4.40
+# torch
+# sentencepiece
 
 # GPU runtime libraries — required for KAMI_DEVICE=cuda on Windows.
 # faster-whisper imports ctranslate2 which dlopens these. The server's DLL

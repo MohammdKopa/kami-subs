@@ -98,8 +98,9 @@ import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 from config import (
-    MODEL_SIZE, DEVICE, COMPUTE_TYPE, TRANSLATOR,
+    MODEL_SIZE, DEVICE, COMPUTE_TYPE, TRANSLATOR, NLLB_MODEL,
     HOST, PORT, SAMPLE_RATE, VAD_FILTER, MAX_CHUNK_LAG_S,
+    SENTENCE_MAX_CHARS,
 )
 
 log = logging.getLogger("kami-subs")
@@ -107,15 +108,41 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 
 # ----- model load (lazy, once per process) ----------------------------------
 _model = None
+_resolved_device = None   # the device whisper actually loaded on ("cuda"/"cpu")
 
 def get_model():
-    global _model
-    if _model is None:
-        from faster_whisper import WhisperModel
-        log.info("loading whisper model=%s device=%s compute=%s", MODEL_SIZE, DEVICE, COMPUTE_TYPE)
-        _model = WhisperModel(MODEL_SIZE, device=DEVICE, compute_type=COMPUTE_TYPE)
-        log.info("whisper model ready")
-    return _model
+    global _model, _resolved_device
+    if _model is not None:
+        return _model
+    from faster_whisper import WhisperModel
+
+    # Build an attempt list. "cuda"/"auto" try the GPU first then fall back to
+    # CPU so a missing CUDA lib (or a stale "cpu" setting that should've been
+    # GPU) can't silently leave turbo crawling at 7s/chunk on the CPU. Explicit
+    # "cpu" stays CPU. CRITICAL: large-v3-turbo on CPU is not real-time — the
+    # warning below is the single most useful line when captions lag.
+    cuda_compute = "float16" if COMPUTE_TYPE in ("int8", "") else COMPUTE_TYPE
+    if DEVICE == "cpu":
+        attempts = [("cpu", "int8")]
+    else:  # "cuda" or "auto"
+        attempts = [("cuda", cuda_compute), ("cpu", "int8")]
+
+    last_err = None
+    for dev, comp in attempts:
+        try:
+            log.info("loading whisper model=%s device=%s compute=%s", MODEL_SIZE, dev, comp)
+            _model = WhisperModel(MODEL_SIZE, device=dev, compute_type=comp)
+            _resolved_device = dev
+            if dev == "cpu" and MODEL_SIZE.startswith("large"):
+                log.warning("running %s on CPU — this is NOT real-time and "
+                            "captions WILL lag. Use a GPU or a smaller model.",
+                            MODEL_SIZE)
+            log.info("whisper model ready on %s", dev)
+            return _model
+        except Exception as e:
+            last_err = e
+            log.warning("whisper load failed on %s (%s); trying next device", dev, e)
+    raise RuntimeError(f"could not load whisper on any device: {last_err}")
 
 
 # ----- hallucination filter -------------------------------------------------
@@ -165,16 +192,106 @@ def looks_like_hallucination(text: str) -> bool:
 
 
 # ----- translation ----------------------------------------------------------
+#
+# Two backends, selected via KAMI_TRANSLATOR:
+#   "google" — deep-translator hits translate.google over the network. Zero
+#              setup, decent, but adds a round-trip per sentence and throttles.
+#   "nllb"   — Meta NLLB-200 runs locally on the same device as whisper. No
+#              network hop (lower, more consistent latency), no rate limit, and
+#              stronger Arabic. Heavier first-time setup; falls back to google
+#              automatically if its deps/model aren't available.
+
+# ISO-639-1 (what the extension/whisper speak) -> NLLB FLORES-200 codes.
+_NLLB_LANG = {
+    "ar": "arb_Arab", "en": "eng_Latn", "es": "spa_Latn", "fr": "fra_Latn",
+    "de": "deu_Latn", "tr": "tur_Latn", "it": "ita_Latn", "pt": "por_Latn",
+    "ru": "rus_Cyrl", "ja": "jpn_Jpan", "ko": "kor_Hang", "zh": "zho_Hans",
+    "hi": "hin_Deva", "fa": "pes_Arab", "ur": "urd_Arab", "nl": "nld_Latn",
+}
+
+_nllb = None              # (translator, tokenizer) once loaded
+_nllb_failed = False      # set True after a load failure so we stop retrying
+
+
+def _get_nllb():
+    """Lazily load NLLB on CTranslate2 (reuses the ct2 already pulled in by
+    faster-whisper — no torch at inference time). Returns (translator, tokenizer)
+    or None if unavailable, in which case callers fall back to google."""
+    global _nllb, _nllb_failed
+    if _nllb is not None or _nllb_failed:
+        return _nllb
+    try:
+        from pathlib import Path
+        import ctranslate2
+        from transformers import AutoTokenizer
+
+        # ct2 needs a converted model dir. Convert once into a cache folder next
+        # to this file; subsequent runs load the converted copy directly.
+        cache_dir = Path(__file__).resolve().parent / ".nllb_ct2"
+        if not (cache_dir / "model.bin").exists():
+            log.info("converting %s to CTranslate2 (one-time, ~2.5GB)...", NLLB_MODEL)
+            from ctranslate2.converters import TransformersConverter
+            TransformersConverter(NLLB_MODEL).convert(str(cache_dir), quantization="int8")
+
+        # Match whatever device whisper actually resolved to; fall back to CPU
+        # if the GPU translator can't init (CPU NLLB is fine — it's tiny).
+        want_dev = _resolved_device or ("cpu" if DEVICE == "cpu" else "cuda")
+        try:
+            translator = ctranslate2.Translator(str(cache_dir), device=want_dev)
+        except Exception as e:
+            log.warning("NLLB on %s failed (%s); using CPU", want_dev, e)
+            translator = ctranslate2.Translator(str(cache_dir), device="cpu")
+            want_dev = "cpu"
+        tokenizer = AutoTokenizer.from_pretrained(NLLB_MODEL)
+        _nllb = (translator, tokenizer)
+        log.info("NLLB translator ready (device=%s)", want_dev)
+    except Exception as e:
+        log.warning("NLLB unavailable (%s) — falling back to google. "
+                    "Install with: pip install transformers torch sentencepiece", e)
+        _nllb_failed = True
+        _nllb = None
+    return _nllb
+
+
+def _translate_nllb(text: str, src: str, tgt: str) -> str:
+    bundle = _get_nllb()
+    if bundle is None:
+        return _translate_google(text, src, tgt)
+    translator, tokenizer = bundle
+    src_code = _NLLB_LANG.get(src)
+    tgt_code = _NLLB_LANG.get(tgt)
+    if tgt_code is None:
+        log.warning("NLLB has no FLORES code for target %r — using google", tgt)
+        return _translate_google(text, src, tgt)
+    # NLLB needs a source language tag. If detection gave us something we don't
+    # map (or "auto"), let the tokenizer default and rely on the target tag.
+    if src_code:
+        tokenizer.src_lang = src_code
+    tokens = tokenizer.convert_ids_to_tokens(tokenizer.encode(text))
+    results = translator.translate_batch(
+        [tokens], target_prefix=[[tgt_code]], beam_size=1, max_decoding_length=256,
+    )
+    out_tokens = results[0].hypotheses[0]
+    if out_tokens and out_tokens[0] == tgt_code:
+        out_tokens = out_tokens[1:]   # strip the target-lang tag we prefixed
+    return tokenizer.decode(tokenizer.convert_tokens_to_ids(out_tokens),
+                            skip_special_tokens=True)
+
+
+def _translate_google(text: str, src: str, tgt: str) -> str:
+    from deep_translator import GoogleTranslator
+    src_arg = "auto" if src in (None, "", "auto") else src
+    return GoogleTranslator(source=src_arg, target=tgt).translate(text)
+
+
 def translate(text: str, src: str, tgt: str) -> str:
-    if not text.strip() or src == tgt:
-        return text
-    if TRANSLATOR == "none":
+    if not text.strip() or src == tgt or TRANSLATOR == "none":
         return text
     try:
+        if TRANSLATOR == "nllb":
+            return _translate_nllb(text, src, tgt)
         if TRANSLATOR == "google":
-            from deep_translator import GoogleTranslator
-            src_arg = "auto" if src in (None, "", "auto") else src
-            return GoogleTranslator(source=src_arg, target=tgt).translate(text)
+            return _translate_google(text, src, tgt)
     except Exception as e:
         log.warning("translation failed (%s -> %s): %s", src, tgt, e)
     return text
@@ -188,6 +305,23 @@ class Session:
     target_lang: str = "ar"
     task: str = "transcribe"
     chunk_id: int = 0
+    # Live-caption display model: one line at a time, like normal subtitles.
+    # `pending` is the sentence currently being spoken (source text). It's
+    # re-translated and shown in full every chunk so the line grows readably;
+    # when the sentence finishes we clear it and the next sentence *replaces*
+    # the old line on screen (the overlay keeps the last line visible in the
+    # gap until then). No stacking of multiple sentences.
+    pending: str = ""
+    last_detected: str = "auto"
+
+
+# Sentence-final marks across the languages we caption — Latin, Arabic (؟ ،),
+# and CJK fullwidth (。！？). A trailing one of these means "translate now".
+_SENTENCE_END = ".!?…。！？؟،;:"
+
+
+def ends_sentence(text: str) -> bool:
+    return text.rstrip().endswith(tuple(_SENTENCE_END))
 
 
 def transcribe_chunk(session: Session, pcm_int16: np.ndarray) -> tuple[str, str]:
@@ -222,25 +356,57 @@ def transcribe_chunk(session: Session, pcm_int16: np.ndarray) -> tuple[str, str]
     return text, (info.language if info and info.language else (lang or "auto"))
 
 
+async def _render(session: Session, loop) -> str:
+    """Translate the in-progress sentence (session.pending) as a whole clause.
+    Returns the translated text (or the raw text when no translation applies)."""
+    if not session.pending:
+        return ""
+    src = session.last_detected if session.source_lang == "auto" else session.source_lang
+    if session.task == "translate" and session.target_lang == "en":
+        return session.pending   # whisper already produced English
+    return await loop.run_in_executor(
+        None, translate, session.pending, src, session.target_lang
+    )
+
+
+async def _send_line(ws: WebSocket, session: Session, partial: str, is_final: bool) -> None:
+    """Push the single visible line (the current sentence, translated)."""
+    await ws.send_text(json.dumps({
+        "type": "transcript",
+        "text": partial, "raw": session.pending,
+        "detectedLang": session.last_detected,
+        "chunkId": session.chunk_id, "isFinal": is_final,
+    }, ensure_ascii=False))
+
+
+async def commit_pending(ws: WebSocket, session: Session, loop) -> None:
+    """Finalize the current sentence: translate + send it as the final line,
+    then clear the buffer so the NEXT sentence replaces it on screen. The
+    overlay keeps showing this line until the next sentence arrives (or it
+    times out on its own — content.js). Used on sentence end and pauses."""
+    if not session.pending:
+        return
+    partial = await _render(session, loop)
+    log.info("commit #%d raw=%r out=%r", session.chunk_id, session.pending, partial)
+    await _send_line(ws, session, partial, is_final=True)
+    session.pending = ""
+
+
 async def _handle_chunk(
     ws: WebSocket, session: Session, loop, raw_bytes: bytes, arrived_at: float
 ) -> None:
-    """One audio chunk: silence-gate -> transcribe -> translate -> send."""
+    """One audio chunk: silence-gate -> transcribe -> buffer -> flush sentence."""
     session.chunk_id += 1
     cid = session.chunk_id
 
     # Backlog drop. If processing has slipped behind real-time, this chunk
     # is already stale by the time we get to it. Subs from 15s ago are
     # worse UX than no subs at all — drop and let the next (fresher) chunk
-    # catch us up. Send empty so the overlay clears.
+    # catch us up. Flush whatever's buffered so we don't lose it.
     lag = time.monotonic() - arrived_at
     if lag > MAX_CHUNK_LAG_S:
+        # Behind real-time: skip this chunk and keep the current line on screen.
         log.info("chunk #%d: dropped (lag=%.2fs > %.1fs)", cid, lag, MAX_CHUNK_LAG_S)
-        await ws.send_text(json.dumps({
-            "type": "transcript",
-            "text": "", "raw": "",
-            "chunkId": cid, "isFinal": True, "dropped": "lag",
-        }))
         return
 
     pcm = np.frombuffer(raw_bytes, dtype=np.int16)
@@ -258,11 +424,10 @@ async def _handle_chunk(
     SILENCE_RMS = 0.005   # voice/music typically > 0.05
     if rms < SILENCE_RMS:
         log.info("chunk #%d: silence skip (rms=%.4f peak=%.3f)", cid, rms, peak)
-        await ws.send_text(json.dumps({
-            "type": "transcript",
-            "text": "", "raw": "",
-            "chunkId": cid, "isFinal": True, "silence": True,
-        }))
+        # A pause ends the current utterance: finalize whatever's building so it
+        # shows in full, then the overlay clears itself after CLEAR_AFTER_MS of
+        # no further updates (content.js).
+        await commit_pending(ws, session, loop)
         return
 
     raw, detected = await loop.run_in_executor(None, transcribe_chunk, session, pcm)
@@ -271,33 +436,29 @@ async def _handle_chunk(
                  cid, detected, rms, peak)
         return
 
-    # Drop whole-chunk fansub-credit hallucinations BEFORE translating or
-    # adding to history. If we add them to history they prime more
-    # hallucinations on subsequent chunks via initial_prompt context.
+    # Drop whole-chunk fansub-credit hallucinations BEFORE buffering them.
+    # If they entered the buffer they'd corrupt the translated sentence and
+    # (via concatenation) the surrounding real words too.
     if looks_like_hallucination(raw):
+        # Skip the hallucinated fragment; keep the current line on screen.
         log.info("chunk #%d: hallucination filter dropped raw=%r", cid, raw)
-        await ws.send_text(json.dumps({
-            "type": "transcript",
-            "text": "", "raw": raw,
-            "chunkId": cid, "isFinal": True, "filtered": "hallucination",
-        }, ensure_ascii=False))
         return
 
-    src = detected if session.source_lang == "auto" else session.source_lang
-    if session.task == "translate" and session.target_lang == "en":
-        out = raw  # whisper already translated to English
-    else:
-        out = await loop.run_in_executor(
-            None, translate, raw, src, session.target_lang
-        )
+    # Append this chunk to the sentence being spoken, re-translate the WHOLE
+    # sentence (full-clause context — the fix for "translation is off"), and
+    # show it growing in real time. The translator always sees a complete
+    # phrase, never a 1s shard, but the user still gets an update every chunk.
+    session.last_detected = detected
+    session.pending = (session.pending + " " + raw).strip() if session.pending else raw
 
-    log.info("chunk #%d [%s->%s] raw=%r out=%r", cid, src, session.target_lang, raw, out)
-    await ws.send_text(json.dumps({
-        "type": "transcript",
-        "text": out, "raw": raw,
-        "detectedLang": detected,
-        "chunkId": cid, "isFinal": True,
-    }, ensure_ascii=False))
+    partial = await _render(session, loop)
+    await _send_line(ws, session, partial, is_final=False)
+    log.info("chunk #%d: pending=%r out=%r", cid, session.pending, partial)
+
+    # When the sentence completes (punctuation) or grows long, clear the buffer
+    # so the next sentence starts a fresh line and replaces this one on screen.
+    if ends_sentence(session.pending) or len(session.pending) >= SENTENCE_MAX_CHARS:
+        session.pending = ""
 
 
 # ----- websocket loop -------------------------------------------------------

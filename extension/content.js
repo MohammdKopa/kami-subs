@@ -3,7 +3,10 @@
 
 const OVERLAY_ID = 'kami-subs-overlay';
 const MAX_VISIBLE_CHARS = 180;
-const FADE_AFTER_MS = 6000;
+// Clear the overlay this long after the last transcript update. While someone's
+// talking, updates land ~every second and keep resetting this timer, so the
+// line stays put; it only fades once speech actually stops for a few seconds.
+const CLEAR_AFTER_MS = 4000;
 
 let overlayEl = null;
 let textEl = null;
@@ -143,9 +146,16 @@ function setText(text) {
   textEl.textContent = t;
   overlayEl.classList.add('kami-visible');
   positionOverlayOverVideo();
-  // Keep visible until the next chunk arrives, instead of fading after 6s —
-  // a long pause between transcripts shouldn't blank the screen mid-scene.
-  if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
+  // Reset the idle clear-timer on every update. The line persists through the
+  // gaps between chunks but disappears once speech stops for CLEAR_AFTER_MS.
+  if (hideTimer) clearTimeout(hideTimer);
+  hideTimer = setTimeout(() => {
+    if (overlayEl) {
+      overlayEl.classList.remove('kami-visible');
+      if (textEl) textEl.textContent = '';
+    }
+    hideTimer = null;
+  }, CLEAR_AFTER_MS);
 }
 
 function showError(msg) {

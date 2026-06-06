@@ -8,6 +8,7 @@ Thumbs.db
 extension/icons/*.png
 !extension/icons/.gitkeep
 backend/models/
+backend/.nllb_ct2/
 
 # Native Messaging host: secrets + machine-specific generated files
 extension/native/.private_key.pem

@@ -41,8 +41,8 @@ The backend stays on your machine. The extension talks to it over `ws://127.0.0.
 - **OS:** Windows 10/11 (Linux/macOS support hasn't been written — see [Contributing](#contributing))
 - **Chrome or Edge** (Chromium ≥ 116)
 - **Python 3.10+** on PATH
-- **GPU strongly recommended** for real-time performance — an NVIDIA card with CUDA 12 + cuDNN 9 gets you sub-second latency. CPU works but introduces 3-5s delay with the `small` model.
-- ~500 MB disk for the `small` Whisper model (downloaded on first run). Larger models up to ~3 GB.
+- **GPU strongly recommended** for real-time performance — an NVIDIA card with CUDA 12 + cuDNN 9 gets you sub-second latency. CPU works but introduces 3-5s delay (use the `small` or `base` model on CPU; `large-v3-turbo` is GPU-realistic).
+- ~1.6 GB disk for the default `large-v3-turbo` model (downloaded on first run). Smaller models from ~75 MB (`tiny`) up.
 
 ---
 
@@ -103,8 +103,9 @@ To remove, run `uninstall.ps1` from the same folder.
 |---|---|---|
 | Source language | Auto detect | Set explicitly to skip Whisper's lang detection |
 | Target language | Arabic | Translation target |
-| Whisper model | small | `tiny` for speed, `large-v3` for quality (GPU only realistically) |
+| Whisper model | large-v3-turbo | `tiny`/`small` for CPU; `large-v3` for max quality |
 | Device | GPU (CUDA) | `cpu` if you don't have an NVIDIA GPU |
+| Translator | NLLB local | offline + stronger Arabic; `Google (online)` or `None` to switch |
 | Font size | 28px | Slider 14–56 |
 | Position | Bottom | Bottom / Top |
 | Backend URL | `ws://127.0.0.1:8765/ws` | Change if running the backend remotely |
@@ -117,13 +118,25 @@ Set these before running `server.py` manually if you want to override defaults. 
 
 | Var | Default | Options |
 |---|---|---|
-| `KAMI_MODEL` | `small` | `tiny`, `base`, `small`, `medium`, `large-v3` |
+| `KAMI_MODEL` | `large-v3-turbo` | `tiny`, `base`, `small`, `medium`, `large-v3`, `large-v3-turbo` |
 | `KAMI_DEVICE` | `cpu` | `cpu`, `cuda` |
 | `KAMI_COMPUTE` | `int8` | `int8` (CPU), `float16` (GPU), `int8_float16` (low VRAM GPU) |
-| `KAMI_TRANSLATOR` | `google` | `google` (deep-translator), `none` |
+| `KAMI_TRANSLATOR` | `nllb` | `nllb` (local NLLB-200), `google` (deep-translator), `none` |
+| `KAMI_NLLB_MODEL` | `facebook/nllb-200-distilled-600M` | any NLLB-200 HF id (e.g. `…-1.3B`) |
+| `KAMI_SENT_MAX_CHUNKS` | `2` | flush the sentence buffer after N chunks even without punctuation (latency cap) |
+| `KAMI_SENT_MAX_CHARS` | `160` | flush the sentence buffer after N characters |
 | `KAMI_HOST` | `127.0.0.1` | bind host |
 | `KAMI_PORT` | `8765` | bind port |
-| `KAMI_VAD` | `false` | Enable Silero VAD pre-filtering |
+| `KAMI_VAD` | `true` | Silero VAD pre-filtering (set `false` to disable) |
+
+**Local translation (`KAMI_TRANSLATOR=nllb`, the default):** runs Meta's NLLB-200 on your machine — offline, no rate limits, and noticeably better Arabic than the free Google endpoint. It needs a one-time setup to activate; until then the backend transparently falls back to Google, so nothing breaks on a fresh install. To enable the local path:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+pip install transformers torch sentencepiece
+```
+
+First run converts the weights to CTranslate2 format (cached in `backend/.nllb_ct2/`, ~2.5 GB download + a minute of conversion). If those packages or the model aren't present, the backend logs a warning and silently falls back to Google — so it's safe to flip on without breaking anything.
 
 ---
 
@@ -162,13 +175,14 @@ The host JSON has `allowed_origins` baked in for extension ID `cbahglicegngghebk
 
 ## Roadmap
 
-- [ ] Argos Translate offline mode (no internet needed for translation)
+- [x] Offline local translation — NLLB-200 (`KAMI_TRANSLATOR=nllb`)
+- [x] Sentence-aware translation buffering (translate whole clauses, not 1s shards)
 - [ ] AudioWorklet replacement for ScriptProcessorNode
 - [ ] macOS / Linux Native Messaging installer
 - [ ] Bilingual mode (original + translation stacked)
 - [ ] Per-site overlay position memory
 - [ ] Whisper streaming mode (partial transcripts before chunk-end)
-- [ ] VAD-aware adaptive chunking instead of fixed 1.5s
+- [ ] VAD-aware adaptive chunking instead of fixed 1s — emit on speech pause
 
 ---
 
